@@ -23,6 +23,7 @@ import (
 	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
 	"github.com/weaveworks/eksctl/pkg/authconfigmap"
 	"github.com/weaveworks/eksctl/pkg/cfn/manager"
+	"github.com/weaveworks/eksctl/pkg/cfn/outputs"
 	"github.com/weaveworks/eksctl/pkg/ctl/cmdutils"
 	"github.com/weaveworks/eksctl/pkg/ctl/cmdutils/filter"
 	"github.com/weaveworks/eksctl/pkg/eks"
@@ -278,6 +279,16 @@ func doCreateCluster(cmd *cmdutils.Cmd, ngFilter *filter.NodeGroupFilter, params
 		preNodegroupAddons, postNodegroupAddons = addon.CreateAddonTasks(cfg, ctl, true, cmd.ProviderConfig.WaitTimeout)
 		postClusterCreationTasks.Append(preNodegroupAddons)
 	}
+
+	// collect cfn outputs for Role1; i.e., service account role arns
+	go func() {
+		for {
+			select {
+			case result := <-outputs.SARoleOutput:
+				logger.Info("result: %+v, result.ServiceAcount: %v, result.Role: %v", result, result.ServiceAccount, result.Role)
+			}
+		}
+	}()
 
 	taskTree := stackManager.NewTasksToCreateClusterWithNodeGroups(cfg.NodeGroups, cfg.ManagedNodeGroups, postClusterCreationTasks)
 
