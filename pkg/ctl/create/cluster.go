@@ -280,12 +280,14 @@ func doCreateCluster(cmd *cmdutils.Cmd, ngFilter *filter.NodeGroupFilter, params
 		postClusterCreationTasks.Append(preNodegroupAddons)
 	}
 
-	// collect cfn outputs for Role1; i.e., service account role arns
+	// collect IRSA outputs from cfn
+	var irsas []outputs.SARole
 	go func() {
 		for {
 			select {
-			case result := <-outputs.SARoleOutput:
-				logger.Info("result.ServiceAcount: %v, result.Role: %v", result.ServiceAccount, result.Role)
+			case saRole := <-outputs.SARoleOutput:
+				logger.Info("ServiceAcount: %v, Role: %v", saRole.ServiceAccount, saRole.Role)
+				irsas = append(irsas, saRole)
 			}
 		}
 	}()
@@ -306,6 +308,7 @@ func doCreateCluster(cmd *cmdutils.Cmd, ngFilter *filter.NodeGroupFilter, params
 		return fmt.Errorf("failed to create cluster %q", meta.Name)
 	}
 
+	logger.Info("IRSAs collected: %+v", irsas)
 	logger.Info("waiting for the control plane availability...")
 
 	// obtain cluster credentials, write kubeconfig
