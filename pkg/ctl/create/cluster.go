@@ -281,13 +281,13 @@ func doCreateCluster(cmd *cmdutils.Cmd, ngFilter *filter.NodeGroupFilter, params
 	}
 
 	// collect IRSA outputs from cfn
-	var irsas []outputs.SARole
+	var irsas []outputs.IRSA
 	go func() {
 		for {
 			select {
-			case saRole := <-outputs.SARoleOutput:
-				logger.Info("ServiceAcount: %v, Role: %v", saRole.ServiceAccount, saRole.Role)
-				irsas = append(irsas, saRole)
+			case irsa := <-outputs.IRSAOutput:
+				logger.Debug("ServiceAcount: %v, IAMRole: %v", irsa.ServiceAccount, irsa.IAMRole)
+				irsas = append(irsas, irsa)
 			}
 		}
 	}()

@@ -169,9 +169,9 @@ func (c *StackCollection) waitUntilStackIsCreated(i *Stack, stack builder.Resour
 		return
 	}
 	if roleARN := outputs.Get(*s, outputs.IAMServiceAccountRoleName); roleARN != nil {
-		outputs.SARoleOutput <- outputs.SARole{
+		outputs.IRSAOutput <- outputs.IRSA{
+			IAMRole:        *roleARN,
 			ServiceAccount: stack.(*builder.IAMRoleResourceSet).ServiceAccount(),
-			Role:           *roleARN,
 		}
 	}
 	errs <- nil

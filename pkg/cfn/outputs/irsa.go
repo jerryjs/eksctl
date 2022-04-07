@@ -5,17 +5,17 @@ import (
 )
 
 // ServiceAccount/Role
-type SARole struct {
+type IRSA struct {
+	IAMRole        string
 	ServiceAccount string
-	Role           string
 }
 
 var (
-	SARoleOutput chan SARole
+	IRSAOutput chan IRSA
 )
 
 func init() {
-	SARoleOutput = make(chan SARole)
+	IRSAOutput = make(chan IRSA)
 }
 
 func Get(stack cfn.Stack, key string) *string {
