@@ -59,20 +59,6 @@ type (
 	CollectorSet struct{ set collectors }
 )
 
-// ServiceAccount/Role
-type SARole struct {
-	ServiceAccount string
-	Role           string
-}
-
-var (
-	SARoleOutput chan SARole
-)
-
-func init() {
-	SARoleOutput = make(chan SARole)
-}
-
 // NewCollectorSet creates a new CollectorSet based on a map of
 // output names to Collector callbacks
 func NewCollectorSet(set map[string]Collector) *CollectorSet {
@@ -83,15 +69,6 @@ func NewCollectorSet(set map[string]Collector) *CollectorSet {
 }
 
 func get(stack cfn.Stack, key string) *string {
-	for _, x := range stack.Outputs {
-		if *x.OutputKey == key {
-			return x.OutputValue
-		}
-	}
-	return nil
-}
-
-func Get(stack cfn.Stack, key string) *string {
 	for _, x := range stack.Outputs {
 		if *x.OutputKey == key {
 			return x.OutputValue

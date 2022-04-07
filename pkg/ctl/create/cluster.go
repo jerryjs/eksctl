@@ -285,7 +285,7 @@ func doCreateCluster(cmd *cmdutils.Cmd, ngFilter *filter.NodeGroupFilter, params
 		for {
 			select {
 			case result := <-outputs.SARoleOutput:
-				logger.Info("result: %+v, result.ServiceAcount: %v, result.Role: %v", result, result.ServiceAccount, result.Role)
+				logger.Info("result.ServiceAcount: %v, result.Role: %v", result.ServiceAccount, result.Role)
 			}
 		}
 	}()
