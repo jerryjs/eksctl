@@ -348,7 +348,6 @@ func doCreateCluster(cmd *cmdutils.Cmd, ngFilter *filter.NodeGroupFilter, params
 		if err != nil {
 			return err
 		}
-
 		for _, ng := range cfg.NodeGroups {
 			// authorise nodes to join
 			if err = authconfigmap.AddNodeGroup(clientSet, ng); err != nil {
@@ -394,7 +393,10 @@ func doCreateCluster(cmd *cmdutils.Cmd, ngFilter *filter.NodeGroupFilter, params
 			if err != nil {
 				return errors.Wrapf(err, "could not initialise Flux installer")
 			}
-
+			// inject IRSA for flux
+			if err := installer.InjectIRSA(&irsas); err != nil {
+				return err
+			}
 			if err := installer.Run(); err != nil {
 				return err
 			}
