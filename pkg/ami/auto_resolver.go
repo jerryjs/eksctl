@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/weaveworks/eksctl/pkg/awsapi"
+
 	"github.com/kris-nova/logger"
 
 	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
@@ -40,12 +41,6 @@ func MakeImageSearchPatterns(version string) map[string]map[int]string {
 		api.NodeImageFamilyWindowsServer2019FullContainer: {
 			ImageClassGeneral: fmt.Sprintf("Windows_Server-2019-English-Full-EKS_Optimized-%v-*", version),
 		},
-		api.NodeImageFamilyWindowsServer2004CoreContainer: {
-			ImageClassGeneral: fmt.Sprintf("Windows_Server-2004-English-Core-EKS_Optimized-%v-*", version),
-		},
-		api.NodeImageFamilyWindowsServer20H2CoreContainer: {
-			ImageClassGeneral: fmt.Sprintf("Windows_Server-20H2-English-Core-EKS_Optimized-%v-*", version),
-		},
 	}
 }
 
@@ -67,7 +62,7 @@ func OwnerAccountID(imageFamily, region string) (string, error) {
 // AutoResolver resolves the AMi to the defaults for the region
 // by querying AWS EC2 API for the AMI to use
 type AutoResolver struct {
-	api ec2iface.EC2API
+	api awsapi.EC2
 }
 
 // Resolve will return an AMI to use based on the default AMI for

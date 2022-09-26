@@ -5,17 +5,18 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/aws/amazon-ec2-instance-selector/v2/pkg/selector"
+
 	"github.com/kris-nova/logger"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
 	"github.com/weaveworks/eksctl/pkg/actions/nodegroup"
-	"github.com/weaveworks/eksctl/pkg/ctl/cmdutils/filter"
-	"github.com/weaveworks/eksctl/pkg/utils/names"
-
 	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
 	"github.com/weaveworks/eksctl/pkg/ctl/cmdutils"
+	"github.com/weaveworks/eksctl/pkg/ctl/cmdutils/filter"
+	"github.com/weaveworks/eksctl/pkg/utils/names"
 )
 
 type nodegroupOptions struct {
@@ -49,9 +50,10 @@ func createNodeGroupCmd(cmd *cmdutils.Cmd) {
 			}()
 		}
 
-		ctl, err := cmd.NewProviderForExistingCluster()
+		ctx := context.Background()
+		ctl, err := cmd.NewProviderForExistingCluster(ctx)
 		if err != nil {
-			return errors.Wrap(err, "couldn't create cluster provider from options")
+			return fmt.Errorf("could not create cluster provider from options: %w", err)
 		}
 
 		if ok, err := ctl.CanOperate(cmd.ClusterConfig); !ok {
@@ -63,8 +65,8 @@ func createNodeGroupCmd(cmd *cmdutils.Cmd) {
 			return err
 		}
 
-		manager := nodegroup.New(cmd.ClusterConfig, ctl, clientSet)
-		return manager.Create(context.TODO(), nodegroup.CreateOpts{
+		manager := nodegroup.New(cmd.ClusterConfig, ctl, clientSet, selector.New(ctl.AWSProvider.Session()))
+		return manager.Create(ctx, nodegroup.CreateOpts{
 			InstallNeuronDevicePlugin: options.InstallNeuronDevicePlugin,
 			InstallNvidiaDevicePlugin: options.InstallNvidiaDevicePlugin,
 			UpdateAuthConfigMap:       options.UpdateAuthConfigMap,

@@ -108,7 +108,7 @@ build-integration-test: $(all_generated_code) ## Ensure integration tests compil
 
 .PHONY: integration-test
 integration-test: build build-integration-test ## Run the integration tests (with cluster creation and cleanup)
-	JUNIT_REPORT_DIR=$(git_toplevel)/test-results ./eksctl-integration-test $(INTEGRATION_TEST_ARGS)
+	INTEGRATION_TEST_FOCUS="$(INTEGRATION_TEST_FOCUS)" ./eksctl-integration-test $(INTEGRATION_TEST_ARGS)
 
 list-integration-suites:
 	@ find integration/tests/ -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | head -c -1 | jq -R -s -c 'split("\n")'
@@ -156,11 +156,6 @@ generate-all: generate-always $(conditionally_generated_files) ## Re-generate al
 .PHONY: check-all-generated-files-up-to-date
 check-all-generated-files-up-to-date: generate-all ## Run the generate all command and verify there is no new diff
 	git diff --quiet -- $(conditionally_generated_files) || (git --no-pager diff $(conditionally_generated_files); echo "HINT: to fix this, run 'git commit $(conditionally_generated_files) --message \"Update generated files\"'"; exit 1)
-
-### Update maxpods.go from AWS
-.PHONY: update-maxpods
-update-maxpods: ## Re-download the max pods info from AWS and regenerate the maxpods.go file
-	@cd pkg/nodebootstrap && go run maxpods_generate.go
 
 ### Update aws-node addon manifests from AWS
 pkg/addons/default/assets/aws-node.yaml:

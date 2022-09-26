@@ -1,6 +1,8 @@
 package unset
 
 import (
+	"context"
+
 	"github.com/kris-nova/logger"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -56,15 +58,16 @@ func unsetLabels(cmd *cmdutils.Cmd, nodeGroupName string, removeLabels []string)
 		return cmdutils.ErrUnsupportedNameArg()
 	}
 
-	ctl, err := cmd.NewProviderForExistingCluster()
+	ctx := context.Background()
+	ctl, err := cmd.NewProviderForExistingCluster(ctx)
 	if err != nil {
 		return err
 	}
 
 	logger.Info("removing label(s) from nodegroup %s in cluster %s", nodeGroupName, cmd.ClusterConfig.Metadata)
-	service := managed.NewService(ctl.Provider.EKS(), ctl.Provider.EC2(), manager.NewStackCollection(ctl.Provider, cfg), cfg.Metadata.Name)
-	manager := label.New(cfg.Metadata.Name, service, ctl.Provider.EKS())
-	if err := manager.Unset(nodeGroupName, removeLabels); err != nil {
+	service := managed.NewService(ctl.AWSProvider.EKS(), ctl.AWSProvider.EC2(), manager.NewStackCollection(ctl.AWSProvider, cfg), cfg.Metadata.Name)
+	manager := label.New(cfg.Metadata.Name, service, ctl.AWSProvider.EKS())
+	if err := manager.Unset(ctx, nodeGroupName, removeLabels); err != nil {
 		return err
 	}
 

@@ -4,11 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pkg/errors"
-
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/eks"
+
 	"github.com/kris-nova/logger"
 
 	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
@@ -58,18 +57,6 @@ func MakeSSMParameterName(version, instanceType, imageFamily string) (string, er
 		return fmt.Sprintf("/aws/service/ami-windows-latest/Windows_Server-2019-English-Core-EKS_Optimized-%s/%s", version, fieldName), nil
 	case api.NodeImageFamilyWindowsServer2019FullContainer:
 		return fmt.Sprintf("/aws/service/ami-windows-latest/Windows_Server-2019-English-Full-EKS_Optimized-%s/%s", version, fieldName), nil
-	case api.NodeImageFamilyWindowsServer2004CoreContainer:
-		return fmt.Sprintf("/aws/service/ami-windows-latest/Windows_Server-2004-English-Core-EKS_Optimized-%s/%s", version, fieldName), nil
-	case api.NodeImageFamilyWindowsServer20H2CoreContainer:
-		const minVersion = api.Version1_21
-		supportsWindows20H2, err := utils.IsMinVersion(minVersion, version)
-		if err != nil {
-			return "", err
-		}
-		if !supportsWindows20H2 {
-			return "", errors.Errorf("Windows Server 20H2 Core requires EKS version %s and above", minVersion)
-		}
-		return fmt.Sprintf("/aws/service/ami-windows-latest/Windows_Server-20H2-English-Core-EKS_Optimized-%s/%s", version, fieldName), nil
 	case api.NodeImageFamilyBottlerocket:
 		return fmt.Sprintf("/aws/service/bottlerocket/aws-k8s-%s/%s/latest/%s", imageType(imageFamily, instanceType, version), instanceEC2ArchName(instanceType), fieldName), nil
 	case api.NodeImageFamilyUbuntu2004, api.NodeImageFamilyUbuntu1804:
@@ -80,12 +67,12 @@ func MakeSSMParameterName(version, instanceType, imageFamily string) (string, er
 }
 
 // MakeManagedSSMParameterName creates an SSM parameter name for a managed nodegroup
-func MakeManagedSSMParameterName(version, amiType string) (string, error) {
+func MakeManagedSSMParameterName(version string, amiType ekstypes.AMITypes) (string, error) {
 	switch amiType {
-	case eks.AMITypesAl2X8664:
+	case ekstypes.AMITypesAl2X8664:
 		imageType := utils.ToKebabCase(api.NodeImageFamilyAmazonLinux2)
 		return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/%s/recommended/release_version", version, imageType), nil
-	case eks.AMITypesAl2X8664Gpu:
+	case ekstypes.AMITypesAl2X8664Gpu:
 		imageType := utils.ToKebabCase(api.NodeImageFamilyAmazonLinux2) + "-gpu"
 		return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/%s/recommended/release_version", version, imageType), nil
 	}

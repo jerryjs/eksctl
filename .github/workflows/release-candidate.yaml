@@ -7,15 +7,15 @@ jobs:
   rc:
     name: Trigger release candidate build
     runs-on: ubuntu-latest
-    container: weaveworks/eksctl-build:ade448cab58af16007a9975c668de59b4763c8ab
+    container: weaveworks/eksctl-build:1b4658d2ffd8fdedfc179b4864f0964b270faf12
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           token: ${{ secrets.WEAVEWORKSBOT_TOKEN }}
           fetch-depth: 0
       - name: Cache go-build and mod
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: |
             ~/.cache/go-build/
@@ -27,5 +27,5 @@ jobs:
         uses: ./.github/actions/setup-identity
         with:
           token: "${{ secrets.WEAVEWORKSBOT_TOKEN }}"
-      - name: Open PRs to release branch and default branch
+      - name: Push tag and open PR to default branch
         run: make prepare-release-candidate

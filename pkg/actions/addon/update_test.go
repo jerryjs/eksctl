@@ -1,13 +1,16 @@
 package addon_test
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/cloudformation"
-	awseks "github.com/aws/aws-sdk-go/service/eks"
-	. "github.com/onsi/ginkgo"
+	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	awseks "github.com/aws/aws-sdk-go-v2/service/eks"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/mock"
 
@@ -28,6 +31,7 @@ var _ = Describe("Update", func() {
 		updateAddonInput   *awseks.UpdateAddonInput
 		describeAddonInput *awseks.DescribeAddonInput
 		fakeStackManager   *fakes.FakeStackManager
+		waitTimeout        = 5 * time.Minute
 	)
 
 	BeforeEach(func() {
@@ -35,7 +39,7 @@ var _ = Describe("Update", func() {
 		mockProvider = mockprovider.NewMockProvider()
 		fakeStackManager = new(fakes.FakeStackManager)
 
-		fakeStackManager.CreateStackStub = func(_ string, rs builder.ResourceSet, _ map[string]string, _ map[string]string, errs chan error) error {
+		fakeStackManager.CreateStackStub = func(_ context.Context, _ string, rs builder.ResourceSetReader, _ map[string]string, _ map[string]string, errs chan error) error {
 			go func() {
 				errs <- nil
 			}()
@@ -48,15 +52,15 @@ var _ = Describe("Update", func() {
 		Expect(err).NotTo(HaveOccurred())
 		oidc.ProviderARN = "arn:aws:iam::456123987123:oidc-provider/oidc.eks.us-west-2.amazonaws.com/id/A39A2842863C47208955D753DE205E6E"
 
-		mockProvider.MockEKS().On("DescribeAddonVersions", mock.Anything).Run(func(args mock.Arguments) {
-			Expect(args).To(HaveLen(1))
-			Expect(args[0]).To(BeAssignableToTypeOf(&awseks.DescribeAddonVersionsInput{}))
+		mockProvider.MockEKS().On("DescribeAddonVersions", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+			Expect(args).To(HaveLen(2))
+			Expect(args[1]).To(BeAssignableToTypeOf(&awseks.DescribeAddonVersionsInput{}))
 		}).Return(&awseks.DescribeAddonVersionsOutput{
-			Addons: []*awseks.AddonInfo{
+			Addons: []ekstypes.AddonInfo{
 				{
 					AddonName: aws.String("my-addon"),
 					Type:      aws.String("type"),
-					AddonVersions: []*awseks.AddonVersionInfo{
+					AddonVersions: []ekstypes.AddonVersionInfo{
 						{
 							AddonVersion: aws.String("v1.7.5-eksbuild.1"),
 						},
@@ -64,7 +68,7 @@ var _ = Describe("Update", func() {
 							AddonVersion: aws.String("v1.7.5-eksbuild.2"),
 						},
 						{
-							//not sure if all versions come with v prefix or not, so test a mix
+							// not sure if all versions come with v prefix or not, so test a mix.
 							AddonVersion: aws.String("v1.7.7-eksbuild.2"),
 						},
 						{
@@ -78,43 +82,42 @@ var _ = Describe("Update", func() {
 			},
 		}, nil)
 
-		mockProvider.MockEKS().On("DescribeAddon", mock.Anything).Run(func(args mock.Arguments) {
-			Expect(args).To(HaveLen(1))
-			Expect(args[0]).To(BeAssignableToTypeOf(&awseks.DescribeAddonInput{}))
-			describeAddonInput = args[0].(*awseks.DescribeAddonInput)
+		mockProvider.MockEKS().On("DescribeAddon", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+			Expect(args).To(HaveLen(2))
+			Expect(args[1]).To(BeAssignableToTypeOf(&awseks.DescribeAddonInput{}))
+			describeAddonInput = args[1].(*awseks.DescribeAddonInput)
 		}).Return(&awseks.DescribeAddonOutput{
-			Addon: &awseks.Addon{
+			Addon: &ekstypes.Addon{
 				AddonName:             aws.String("my-addon"),
 				AddonVersion:          aws.String("v1.0.0-eksbuild.2"),
 				ServiceAccountRoleArn: aws.String("original-arn"),
-				Status:                aws.String("created"),
+				Status:                "created",
 			},
 		}, nil).Once()
 
 		addonManager, err = addon.New(&api.ClusterConfig{Metadata: &api.ClusterMeta{
 			Version: "1.18",
 			Name:    "my-cluster",
-		}}, mockProvider.EKS(), fakeStackManager, true, oidc, nil, 5*time.Minute)
+		}}, mockProvider.EKS(), fakeStackManager, true, oidc, nil)
 		Expect(err).NotTo(HaveOccurred())
-		addonManager.SetTimeout(time.Second)
 	})
 
 	When("EKS returns an UpdateAddonOutput", func() {
 		BeforeEach(func() {
-			mockProvider.MockEKS().On("UpdateAddon", mock.Anything).Run(func(args mock.Arguments) {
-				Expect(args).To(HaveLen(1))
-				Expect(args[0]).To(BeAssignableToTypeOf(&awseks.UpdateAddonInput{}))
-				updateAddonInput = args[0].(*awseks.UpdateAddonInput)
+			mockProvider.MockEKS().On("UpdateAddon", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+				Expect(args).To(HaveLen(2))
+				Expect(args[1]).To(BeAssignableToTypeOf(&awseks.UpdateAddonInput{}))
+				updateAddonInput = args[1].(*awseks.UpdateAddonInput)
 			}).Return(&awseks.UpdateAddonOutput{}, nil)
 		})
 
 		When("updating the version", func() {
 			It("updates the addon and preserves the existing role", func() {
-				err := addonManager.Update(&api.Addon{
+				err := addonManager.Update(context.Background(), &api.Addon{
 					Name:    "my-addon",
 					Version: "v1.0.0-eksbuild.2",
 					Force:   true,
-				}, false)
+				}, 0)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(*describeAddonInput.ClusterName).To(Equal("my-cluster"))
@@ -123,15 +126,15 @@ var _ = Describe("Update", func() {
 				Expect(*updateAddonInput.AddonName).To(Equal("my-addon"))
 				Expect(*updateAddonInput.AddonVersion).To(Equal("v1.0.0-eksbuild.2"))
 				Expect(*updateAddonInput.ServiceAccountRoleArn).To(Equal("original-arn"))
-				Expect(*updateAddonInput.ResolveConflicts).To(Equal("overwrite"))
+				Expect(updateAddonInput.ResolveConflicts).To(Equal(ekstypes.ResolveConflictsOverwrite))
 			})
 
 			When("the version is not set", func() {
 				It("preserves the existing addon version", func() {
-					err := addonManager.Update(&api.Addon{
+					err := addonManager.Update(context.Background(), &api.Addon{
 						Name:    "my-addon",
 						Version: "",
-					}, false)
+					}, 0)
 
 					Expect(err).NotTo(HaveOccurred())
 					Expect(*describeAddonInput.ClusterName).To(Equal("my-cluster"))
@@ -145,10 +148,10 @@ var _ = Describe("Update", func() {
 
 			When("the version is set to a numeric version", func() {
 				It("discovers and uses the latest available version", func() {
-					err := addonManager.Update(&api.Addon{
+					err := addonManager.Update(context.Background(), &api.Addon{
 						Name:    "my-addon",
 						Version: "1.7.5",
-					}, false)
+					}, 0)
 
 					Expect(err).NotTo(HaveOccurred())
 					Expect(*describeAddonInput.ClusterName).To(Equal("my-cluster"))
@@ -162,10 +165,10 @@ var _ = Describe("Update", func() {
 
 			When("the version is set to latest", func() {
 				It("discovers and uses the latest available version", func() {
-					err := addonManager.Update(&api.Addon{
+					err := addonManager.Update(context.Background(), &api.Addon{
 						Name:    "my-addon",
 						Version: "latest",
-					}, false)
+					}, 0)
 
 					Expect(err).NotTo(HaveOccurred())
 					Expect(*describeAddonInput.ClusterName).To(Equal("my-cluster"))
@@ -179,11 +182,11 @@ var _ = Describe("Update", func() {
 
 			When("the version is set to a version that does not exist", func() {
 				It("returns an error", func() {
-					err := addonManager.Update(&api.Addon{
+					err := addonManager.Update(context.Background(), &api.Addon{
 						Name:             "my-addon",
 						Version:          "1.7.8",
 						AttachPolicyARNs: []string{"arn-1"},
-					}, false)
+					}, 0)
 					Expect(err).To(HaveOccurred())
 					Expect(err).To(MatchError(ContainSubstring("no version(s) found matching \"1.7.8\" for \"my-addon\"")))
 				})
@@ -193,21 +196,21 @@ var _ = Describe("Update", func() {
 		When("wait is true", func() {
 			When("the addon update succeeds", func() {
 				BeforeEach(func() {
-					mockProvider.MockEKS().On("DescribeAddon", mock.Anything).
+					mockProvider.MockEKS().On("DescribeAddon", mock.Anything, mock.Anything, mock.Anything).
 						Return(&awseks.DescribeAddonOutput{
-							Addon: &awseks.Addon{
+							Addon: &ekstypes.Addon{
 								AddonName: aws.String("my-addon"),
-								Status:    aws.String("ACTIVE"),
+								Status:    ekstypes.AddonStatusActive,
 							},
 						}, nil)
 				})
 
 				It("creates the addon and waits for it to be running", func() {
-					err := addonManager.Update(&api.Addon{
+					err := addonManager.Update(context.Background(), &api.Addon{
 						Name:    "my-addon",
 						Version: "v1.0.0-eksbuild.2",
 						Force:   true,
-					}, true)
+					}, waitTimeout)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(*describeAddonInput.ClusterName).To(Equal("my-cluster"))
 					Expect(*describeAddonInput.AddonName).To(Equal("my-addon"))
@@ -215,28 +218,28 @@ var _ = Describe("Update", func() {
 					Expect(*updateAddonInput.AddonName).To(Equal("my-addon"))
 					Expect(*updateAddonInput.AddonVersion).To(Equal("v1.0.0-eksbuild.2"))
 					Expect(*updateAddonInput.ServiceAccountRoleArn).To(Equal("original-arn"))
-					Expect(*updateAddonInput.ResolveConflicts).To(Equal("overwrite"))
+					Expect(updateAddonInput.ResolveConflicts).To(Equal(ekstypes.ResolveConflictsOverwrite))
 				})
 			})
 
 			When("the addon update fails", func() {
 				BeforeEach(func() {
-					mockProvider.MockEKS().On("DescribeAddon", mock.Anything).
+					mockProvider.MockEKS().On("DescribeAddon", mock.Anything, mock.Anything, mock.Anything).
 						Return(&awseks.DescribeAddonOutput{
-							Addon: &awseks.Addon{
+							Addon: &ekstypes.Addon{
 								AddonName: aws.String("my-addon"),
-								Status:    aws.String("DEGRADED"),
+								Status:    ekstypes.AddonStatusDegraded,
 							},
 						}, nil)
 				})
 
 				It("returns an error", func() {
-					err := addonManager.Update(&api.Addon{
+					err := addonManager.Update(context.Background(), &api.Addon{
 						Name:    "my-addon",
 						Version: "v1.0.0-eksbuild.2",
 						Force:   true,
-					}, true)
-					Expect(err).To(MatchError("timed out waiting for addon \"my-addon\" to become active, status: \"DEGRADED\""))
+					}, waitTimeout)
+					Expect(err).To(MatchError(`addon status transitioned to "DEGRADED"`))
 				})
 			})
 		})
@@ -244,11 +247,11 @@ var _ = Describe("Update", func() {
 		When("updating the policy", func() {
 			When("specifying a new serviceAccountRoleARN", func() {
 				It("updates the addon", func() {
-					err := addonManager.Update(&api.Addon{
+					err := addonManager.Update(context.Background(), &api.Addon{
 						Name:                  "my-addon",
 						Version:               "v1.0.0-eksbuild.2",
 						ServiceAccountRoleARN: "new-arn",
-					}, false)
+					}, 0)
 
 					Expect(err).NotTo(HaveOccurred())
 					Expect(*describeAddonInput.ClusterName).To(Equal("my-cluster"))
@@ -265,7 +268,7 @@ var _ = Describe("Update", func() {
 					It("updates the stack", func() {
 						fakeStackManager.DescribeStackReturns(&manager.Stack{
 							StackName: aws.String("eksctl-my-cluster-addon-vpc-cni"),
-							Outputs: []*cloudformation.Output{
+							Outputs: []types.Output{
 								{
 									OutputValue: aws.String("new-service-account-role-arn"),
 									OutputKey:   aws.String(outputs.IAMServiceAccountRoleName),
@@ -273,16 +276,16 @@ var _ = Describe("Update", func() {
 							},
 						}, nil)
 
-						err := addonManager.Update(&api.Addon{
+						err := addonManager.Update(context.Background(), &api.Addon{
 							Name:             "vpc-cni",
 							Version:          "v1.0.0-eksbuild.2",
 							AttachPolicyARNs: []string{"arn-1"},
-						}, false)
+						}, 0)
 
 						Expect(err).NotTo(HaveOccurred())
 
 						Expect(fakeStackManager.UpdateStackCallCount()).To(Equal(1))
-						options := fakeStackManager.UpdateStackArgsForCall(0)
+						_, options := fakeStackManager.UpdateStackArgsForCall(0)
 						Expect(*options.Stack.StackName).To(Equal("eksctl-my-cluster-addon-vpc-cni"))
 						Expect(options.ChangeSetName).To(ContainSubstring("updating-policy"))
 						Expect(options.Description).To(Equal("updating policies"))
@@ -300,16 +303,16 @@ var _ = Describe("Update", func() {
 
 				When("its a new set of ARNs", func() {
 					It("creates a role with the ARNs", func() {
-						err := addonManager.Update(&api.Addon{
+						err := addonManager.Update(context.Background(), &api.Addon{
 							Name:             "my-addon",
 							Version:          "v1.0.0-eksbuild.2",
 							AttachPolicyARNs: []string{"arn-1"},
-						}, false)
+						}, 0)
 
 						Expect(err).NotTo(HaveOccurred())
 
 						Expect(fakeStackManager.CreateStackCallCount()).To(Equal(1))
-						name, resourceSet, tags, _, _ := fakeStackManager.CreateStackArgsForCall(0)
+						_, name, resourceSet, tags, _, _ := fakeStackManager.CreateStackArgsForCall(0)
 						Expect(name).To(Equal("eksctl-my-cluster-addon-my-addon"))
 						Expect(resourceSet).NotTo(BeNil())
 						Expect(tags).To(Equal(map[string]string{
@@ -332,7 +335,7 @@ var _ = Describe("Update", func() {
 					It("updates the stack", func() {
 						fakeStackManager.DescribeStackReturns(&manager.Stack{
 							StackName: aws.String("eksctl-my-cluster-addon-vpc-cni"),
-							Outputs: []*cloudformation.Output{
+							Outputs: []types.Output{
 								{
 									OutputValue: aws.String("new-service-account-role-arn"),
 									OutputKey:   aws.String(outputs.IAMServiceAccountRoleName),
@@ -340,18 +343,18 @@ var _ = Describe("Update", func() {
 							},
 						}, nil)
 
-						err := addonManager.Update(&api.Addon{
+						err := addonManager.Update(context.Background(), &api.Addon{
 							Name:    "vpc-cni",
 							Version: "v1.0.0-eksbuild.2",
 							AttachPolicy: api.InlineDocument{
 								"foo": "policy-bar",
 							},
-						}, false)
+						}, 0)
 
 						Expect(err).NotTo(HaveOccurred())
 
 						Expect(fakeStackManager.UpdateStackCallCount()).To(Equal(1))
-						options := fakeStackManager.UpdateStackArgsForCall(0)
+						_, options := fakeStackManager.UpdateStackArgsForCall(0)
 						Expect(*options.Stack.StackName).To(Equal("eksctl-my-cluster-addon-vpc-cni"))
 						Expect(options.ChangeSetName).To(ContainSubstring("updating-policy"))
 						Expect(options.Description).To(Equal("updating policies"))
@@ -368,18 +371,18 @@ var _ = Describe("Update", func() {
 
 				When("its a new set of policies", func() {
 					It("creates a role with the policies", func() {
-						err := addonManager.Update(&api.Addon{
+						err := addonManager.Update(context.Background(), &api.Addon{
 							Name:    "my-addon",
 							Version: "v1.0.0-eksbuild.2",
 							AttachPolicy: api.InlineDocument{
 								"foo": "policy-bar",
 							},
-						}, false)
+						}, 0)
 
 						Expect(err).NotTo(HaveOccurred())
 
 						Expect(fakeStackManager.CreateStackCallCount()).To(Equal(1))
-						name, resourceSet, tags, _, _ := fakeStackManager.CreateStackArgsForCall(0)
+						_, name, resourceSet, tags, _, _ := fakeStackManager.CreateStackArgsForCall(0)
 						Expect(name).To(Equal("eksctl-my-cluster-addon-my-addon"))
 						Expect(resourceSet).NotTo(BeNil())
 						Expect(tags).To(Equal(map[string]string{
@@ -402,7 +405,7 @@ var _ = Describe("Update", func() {
 					It("updates the stack", func() {
 						fakeStackManager.DescribeStackReturns(&manager.Stack{
 							StackName: aws.String("eksctl-my-cluster-addon-vpc-cni"),
-							Outputs: []*cloudformation.Output{
+							Outputs: []types.Output{
 								{
 									OutputValue: aws.String("new-service-account-role-arn"),
 									OutputKey:   aws.String(outputs.IAMServiceAccountRoleName),
@@ -410,18 +413,18 @@ var _ = Describe("Update", func() {
 							},
 						}, nil)
 
-						err := addonManager.Update(&api.Addon{
+						err := addonManager.Update(context.Background(), &api.Addon{
 							Name:    "vpc-cni",
 							Version: "v1.0.0-eksbuild.2",
 							WellKnownPolicies: api.WellKnownPolicies{
 								AutoScaler: true,
 							},
-						}, false)
+						}, 0)
 
 						Expect(err).NotTo(HaveOccurred())
 
 						Expect(fakeStackManager.UpdateStackCallCount()).To(Equal(1))
-						options := fakeStackManager.UpdateStackArgsForCall(0)
+						_, options := fakeStackManager.UpdateStackArgsForCall(0)
 						Expect(*options.Stack.StackName).To(Equal("eksctl-my-cluster-addon-vpc-cni"))
 						Expect(options.ChangeSetName).To(ContainSubstring("updating-policy"))
 						Expect(options.Description).To(Equal("updating policies"))
@@ -438,18 +441,18 @@ var _ = Describe("Update", func() {
 
 				When("its a new set of well known policies", func() {
 					It("creates a role with the well known policies", func() {
-						err := addonManager.Update(&api.Addon{
+						err := addonManager.Update(context.Background(), &api.Addon{
 							Name:    "my-addon",
 							Version: "v1.0.0-eksbuild.2",
 							WellKnownPolicies: api.WellKnownPolicies{
 								AutoScaler: true,
 							},
-						}, false)
+						}, 0)
 
 						Expect(err).NotTo(HaveOccurred())
 
 						Expect(fakeStackManager.CreateStackCallCount()).To(Equal(1))
-						name, resourceSet, tags, _, _ := fakeStackManager.CreateStackArgsForCall(0)
+						_, name, resourceSet, tags, _, _ := fakeStackManager.CreateStackArgsForCall(0)
 						Expect(name).To(Equal("eksctl-my-cluster-addon-my-addon"))
 						Expect(resourceSet).NotTo(BeNil())
 						Expect(tags).To(Equal(map[string]string{
@@ -471,15 +474,15 @@ var _ = Describe("Update", func() {
 
 	When("EKS fails to return an UpdateAddonOutput", func() {
 		It("returns an error", func() {
-			mockProvider.MockEKS().On("UpdateAddon", mock.Anything).Run(func(args mock.Arguments) {
-				Expect(args).To(HaveLen(1))
-				Expect(args[0]).To(BeAssignableToTypeOf(&awseks.UpdateAddonInput{}))
-				updateAddonInput = args[0].(*awseks.UpdateAddonInput)
+			mockProvider.MockEKS().On("UpdateAddon", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+				Expect(args).To(HaveLen(2))
+				Expect(args[1]).To(BeAssignableToTypeOf(&awseks.UpdateAddonInput{}))
+				updateAddonInput = args[1].(*awseks.UpdateAddonInput)
 			}).Return(nil, fmt.Errorf("foo"))
 
-			err := addonManager.Update(&api.Addon{
+			err := addonManager.Update(context.Background(), &api.Addon{
 				Name: "my-addon",
-			}, false)
+			}, 0)
 			Expect(err).To(MatchError(`failed to update addon "my-addon": foo`))
 			Expect(*updateAddonInput.ClusterName).To(Equal("my-cluster"))
 			Expect(*updateAddonInput.AddonName).To(Equal("my-addon"))

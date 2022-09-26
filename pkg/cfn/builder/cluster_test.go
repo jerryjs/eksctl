@@ -1,12 +1,15 @@
 package builder_test
 
 import (
+	"context"
 	"encoding/json"
 
-	cfn "github.com/aws/aws-sdk-go/service/cloudformation"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	. "github.com/onsi/ginkgo"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/mock"
 	"github.com/tidwall/gjson"
@@ -38,7 +41,7 @@ var _ = Describe("Cluster Template Builder", func() {
 	})
 
 	JustBeforeEach(func() {
-		crs = builder.NewClusterResourceSet(provider.EC2(), provider.Region(), cfg, existingStack)
+		crs = builder.NewClusterResourceSet(provider.EC2(), provider.Region(), cfg, existingStack, false)
 	})
 
 	Describe("AddAllResources", func() {
@@ -48,7 +51,7 @@ var _ = Describe("Cluster Template Builder", func() {
 		)
 
 		JustBeforeEach(func() {
-			addErr = crs.AddAllResources()
+			addErr = crs.AddAllResources(context.Background())
 			clusterTemplate = &fakes.FakeTemplate{}
 			templateBody, err := crs.RenderJSON()
 			Expect(err).ShouldNot(HaveOccurred())
@@ -277,8 +280,7 @@ var _ = Describe("Cluster Template Builder", func() {
 
 		It("should add the correct policies and references to the ServiceRole ARN", func() {
 			Expect(clusterTemplate.Resources["ServiceRole"].Properties.ManagedPolicyArns).To(HaveLen(2))
-			Expect(clusterTemplate.Resources["ServiceRole"].Properties.ManagedPolicyArns[0]).To(Equal(makePolicyARNRef("AmazonEKSClusterPolicy")))
-			Expect(clusterTemplate.Resources["ServiceRole"].Properties.ManagedPolicyArns[1]).To(Equal(makePolicyARNRef("AmazonEKSVPCResourceController")))
+			Expect(clusterTemplate.Resources["ServiceRole"].Properties.ManagedPolicyArns).To(ContainElements(makePolicyARNRef("AmazonEKSClusterPolicy"), makePolicyARNRef("AmazonEKSVPCResourceController")))
 
 			cwPolicy := clusterTemplate.Resources["PolicyCloudWatchMetrics"].Properties
 			Expect(isRefTo(cwPolicy.Roles[0], "ServiceRole")).To(BeTrue())
@@ -366,7 +368,7 @@ var _ = Describe("Cluster Template Builder", func() {
 				detailsJSON := serviceDetailsJSON
 				var output *ec2.DescribeVpcEndpointServicesOutput
 				Expect(json.Unmarshal([]byte(detailsJSON), &output)).To(Succeed())
-				provider.MockEC2().On("DescribeVpcEndpointServices", mock.MatchedBy(func(e *ec2.DescribeVpcEndpointServicesInput) bool {
+				provider.MockEC2().On("DescribeVpcEndpointServices", mock.Anything, mock.MatchedBy(func(e *ec2.DescribeVpcEndpointServicesInput) bool {
 					return len(e.ServiceNames) == 5
 				})).Return(output, nil)
 			})
@@ -545,7 +547,7 @@ var _ = Describe("Cluster Template Builder", func() {
 		Context("when adding vpc endpoint resources fails", func() {
 			BeforeEach(func() {
 				cfg.PrivateCluster = &api.PrivateCluster{Enabled: true}
-				provider.MockEC2().On("DescribeVpcEndpointServices", mock.Anything).Return(nil, errors.New("o-noes"))
+				provider.MockEC2().On("DescribeVpcEndpointServices", mock.Anything, mock.Anything).Return(nil, errors.New("o-noes"))
 			})
 
 			It("should return the error", func() {
@@ -574,7 +576,20 @@ var _ = Describe("Cluster Template Builder", func() {
 			})
 
 			It("should fail", func() {
-				Expect(addErr).To(MatchError(ContainSubstring("insufficient number of subnets")))
+				Expect(addErr).To(MatchError(HaveSuffix("insufficient number of subnets, at least 2x public and/or 2x private subnets are required")))
+			})
+		})
+
+		Context("[Outposts] when the spec has insufficient subnets", func() {
+			BeforeEach(func() {
+				cfg.VPC.Subnets = &api.ClusterSubnets{}
+				cfg.Outpost = &api.Outpost{
+					ControlPlaneOutpostARN: "arn:aws:outposts:us-west-2:1234:outpost/op-1234",
+				}
+			})
+
+			It("should fail", func() {
+				Expect(addErr).To(MatchError(HaveSuffix("insufficient number of subnets, at least 1x public and/or 1x private subnets are required for Outposts")))
 			})
 		})
 
@@ -594,14 +609,14 @@ var _ = Describe("Cluster Template Builder", func() {
 		It("should not error", func() {
 			// the actual work gets done right the way down in outputs where there is currently no interface
 			// so there is little value here right now
-			Expect(crs.GetAllOutputs(cfn.Stack{})).To(Succeed())
+			Expect(crs.GetAllOutputs(types.Stack{})).To(Succeed())
 		})
 	})
 
 	Describe("RenderJSON", func() {
 		It("returns the template rendered as JSON", func() {
 			// the work actually gets done on the internal resource set
-			Expect(crs.AddAllResources()).To(Succeed())
+			Expect(crs.AddAllResources(context.Background())).To(Succeed())
 			result, err := crs.RenderJSON()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(ContainSubstring(vpcResourceKey))
@@ -611,7 +626,7 @@ var _ = Describe("Cluster Template Builder", func() {
 	Describe("Template", func() {
 		It("returns the template from the inner resource set", func() {
 			// the work actually gets done on the internal resource set
-			Expect(crs.AddAllResources()).To(Succeed())
+			Expect(crs.AddAllResources(context.Background())).To(Succeed())
 			clusterTemplate := crs.Template()
 			Expect(clusterTemplate.Resources).To(HaveKey(vpcResourceKey))
 		})

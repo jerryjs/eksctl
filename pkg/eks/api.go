@@ -5,12 +5,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/client"
@@ -18,19 +24,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/cloudformation"
-	"github.com/aws/aws-sdk-go/service/cloudformation/cloudformationiface"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
-	awseks "github.com/aws/aws-sdk-go/service/eks"
-	"github.com/aws/aws-sdk-go/service/eks/eksiface"
-	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/aws/aws-sdk-go/service/iam/iamiface"
 	"github.com/gofrs/flock"
 	"github.com/kris-nova/logger"
 	"github.com/pkg/errors"
 	"github.com/spf13/afero"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8sclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/yaml"
 
@@ -41,48 +40,49 @@ import (
 	"github.com/weaveworks/eksctl/pkg/cfn/manager"
 	ekscreds "github.com/weaveworks/eksctl/pkg/credentials"
 	"github.com/weaveworks/eksctl/pkg/kubernetes"
-	kubewrapper "github.com/weaveworks/eksctl/pkg/kubernetes"
+	"github.com/weaveworks/eksctl/pkg/utils/kubeconfig"
+	"github.com/weaveworks/eksctl/pkg/utils/nodes"
 	"github.com/weaveworks/eksctl/pkg/version"
 )
 
 // ClusterProvider stores information about the cluster
 type ClusterProvider struct {
+	// KubeProvider offers helper methods to handle Kubernetes operations
+	KubeProvider
+
 	// core fields used for config and AWS APIs
-	Provider api.ClusterProvider
+	AWSProvider api.ClusterProvider
 	// informative fields, i.e. used as outputs
 	Status *ProviderStatus
+}
+
+// KubernetesProvider provides helper methods to handle Kubernetes operations.
+type KubernetesProvider struct {
+	WaitTimeout time.Duration
+	RoleARN     string
+	Signer      api.STSPresigner
 }
 
 //counterfeiter:generate -o fakes/fake_kube_provider.go . KubeProvider
 // KubeProvider is an interface with helper funcs for k8s and EKS that are part of ClusterProvider
 type KubeProvider interface {
-	NewRawClient(spec *api.ClusterConfig) (*kubewrapper.RawClient, error)
+	NewRawClient(clusterInfo kubeconfig.ClusterInfo) (*kubernetes.RawClient, error)
+	NewStdClientSet(clusterInfo kubeconfig.ClusterInfo) (*k8sclient.Clientset, error)
 	ServerVersion(rawClient *kubernetes.RawClient) (string, error)
-	LoadClusterIntoSpecFromStack(spec *api.ClusterConfig, stackManager manager.StackManager) error
-	ValidateClusterForCompatibility(cfg *api.ClusterConfig, stackManager manager.StackManager) error
-	UpdateAuthConfigMap(nodeGroups []*api.NodeGroup, clientSet kubernetes.Interface) error
-	WaitForNodes(clientSet kubernetes.Interface, ng KubeNodeGroup) error
+	WaitForControlPlane(meta *api.ClusterMeta, clientSet *kubernetes.RawClient, waitTimeout time.Duration) error
 }
 
 // ProviderServices stores the used APIs
 type ProviderServices struct {
 	spec *api.ProviderConfig
-	cfn  cloudformationiface.CloudFormationAPI
 	asg  awsapi.ASG
-	eks  eksiface.EKSAPI
-	ec2  ec2iface.EC2API
-	iam  iamiface.IAMAPI
 
 	cloudtrail     awsapi.CloudTrail
 	cloudwatchlogs awsapi.CloudWatchLogs
-
-	session *session.Session
+	session        *session.Session
 
 	*ServicesV2
 }
-
-// CloudFormation returns a representation of the CloudFormation API
-func (p ProviderServices) CloudFormation() cloudformationiface.CloudFormationAPI { return p.cfn }
 
 // CloudFormationRoleARN returns, if any, a service role used by CloudFormation to call AWS API on your behalf
 func (p ProviderServices) CloudFormationRoleARN() string { return p.spec.CloudFormationRoleARN }
@@ -94,15 +94,6 @@ func (p ProviderServices) CloudFormationDisableRollback() bool {
 
 // ASG returns a representation of the AutoScaling API
 func (p ProviderServices) ASG() awsapi.ASG { return p.asg }
-
-// EKS returns a representation of the EKS API
-func (p ProviderServices) EKS() eksiface.EKSAPI { return p.eks }
-
-// EC2 returns a representation of the EC2 API
-func (p ProviderServices) EC2() ec2iface.EC2API { return p.ec2 }
-
-// IAM returns a representation of the IAM API
-func (p ProviderServices) IAM() iamiface.IAMAPI { return p.iam }
 
 // CloudTrail returns a representation of the CloudTrail API
 func (p ProviderServices) CloudTrail() awsapi.CloudTrail { return p.cloudtrail }
@@ -131,14 +122,19 @@ func (p ProviderServices) Session() *session.Session {
 
 // ClusterInfo provides information about the cluster.
 type ClusterInfo struct {
-	Cluster *awseks.Cluster
+	Cluster *ekstypes.Cluster
+}
+
+// SessionProvider abstracts an aws credentials.Value provider.
+type SessionProvider interface {
+	Get() (credentials.Value, error)
 }
 
 // ProviderStatus stores information about the used IAM role and the resulting session
 type ProviderStatus struct {
-	iamRoleARN   string
-	sessionCreds *credentials.Credentials
+	IAMRoleARN   string
 	ClusterInfo  *ClusterInfo
+	SessionCreds SessionProvider
 }
 
 // New creates a new setup of the used AWS APIs
@@ -147,7 +143,7 @@ func New(ctx context.Context, spec *api.ProviderConfig, clusterSpec *api.Cluster
 		spec: spec,
 	}
 	c := &ClusterProvider{
-		Provider: provider,
+		AWSProvider: provider,
 	}
 	// Create a new session and save credentials for possible
 	// later re-use if overriding sessions due to custom URL
@@ -176,12 +172,8 @@ func New(ctx context.Context, spec *api.ProviderConfig, clusterSpec *api.Cluster
 	}
 
 	provider.session = s
-	provider.cfn = cloudformation.New(s)
-	provider.eks = awseks.New(s)
-	provider.ec2 = ec2.New(s)
-	provider.iam = iam.New(s)
 
-	cfg, err := newV2Config(spec, c.Provider.Region(), credentialsCacheFilePath)
+	cfg, err := newV2Config(spec, c.AWSProvider.Region(), credentialsCacheFilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -191,30 +183,13 @@ func New(ctx context.Context, spec *api.ProviderConfig, clusterSpec *api.Cluster
 	}
 
 	c.Status = &ProviderStatus{
-		sessionCreds: s.Config.Credentials,
+		SessionCreds: s.Config.Credentials,
 	}
 
 	provider.asg = autoscaling.NewFromConfig(cfg)
 	provider.cloudwatchlogs = cloudwatchlogs.NewFromConfig(cfg)
 	provider.cloudtrail = cloudtrail.NewFromConfig(cfg)
 
-	// override sessions if any custom endpoints specified
-	if endpoint, ok := os.LookupEnv("AWS_CLOUDFORMATION_ENDPOINT"); ok {
-		logger.Debug("Setting CloudFormation endpoint to %s", endpoint)
-		provider.cfn = cloudformation.New(s, s.Config.Copy().WithEndpoint(endpoint))
-	}
-	if endpoint, ok := os.LookupEnv("AWS_EKS_ENDPOINT"); ok {
-		logger.Debug("Setting EKS endpoint to %s", endpoint)
-		provider.eks = awseks.New(s, s.Config.Copy().WithEndpoint(endpoint))
-	}
-	if endpoint, ok := os.LookupEnv("AWS_EC2_ENDPOINT"); ok {
-		logger.Debug("Setting EC2 endpoint to %s", endpoint)
-		provider.ec2 = ec2.New(s, s.Config.Copy().WithEndpoint(endpoint))
-	}
-	if endpoint, ok := os.LookupEnv("AWS_IAM_ENDPOINT"); ok {
-		logger.Debug("Setting IAM endpoint to %s", endpoint)
-		provider.iam = iam.New(s, s.Config.Copy().WithEndpoint(endpoint))
-	}
 	if endpoint, ok := os.LookupEnv("AWS_CLOUDTRAIL_ENDPOINT"); ok {
 		logger.Debug("Setting CloudTrail endpoint to %s", endpoint)
 		provider.cloudtrail = cloudtrail.NewFromConfig(cfg, func(o *cloudtrail.Options) {
@@ -223,10 +198,21 @@ func New(ctx context.Context, spec *api.ProviderConfig, clusterSpec *api.Cluster
 	}
 
 	if clusterSpec != nil {
-		clusterSpec.Metadata.Region = c.Provider.Region()
+		clusterSpec.Metadata.Region = c.AWSProvider.Region()
 	}
 
-	return c, c.checkAuth(ctx)
+	// c.Status.IAMRoleARN is set up in checkAuth which is later on needed by the kubeProvider.
+	if err := c.checkAuth(ctx); err != nil {
+		return nil, err
+	}
+	kubeProvider := &KubernetesProvider{
+		WaitTimeout: spec.WaitTimeout,
+		RoleARN:     c.Status.IAMRoleARN,
+		Signer:      provider.STSPresigner(),
+	}
+	c.KubeProvider = kubeProvider
+
+	return c, nil
 }
 
 // ParseConfig parses data into a ClusterConfig
@@ -276,7 +262,7 @@ func readConfig(configFile string) ([]byte, error) {
 // IsSupportedRegion check if given region is supported
 func (c *ClusterProvider) IsSupportedRegion() bool {
 	for _, supportedRegion := range api.SupportedRegions() {
-		if c.Provider.Region() == supportedRegion {
+		if c.AWSProvider.Region() == supportedRegion {
 			return true
 		}
 	}
@@ -285,7 +271,7 @@ func (c *ClusterProvider) IsSupportedRegion() bool {
 
 // GetCredentialsEnv returns the AWS credentials for env usage
 func (c *ClusterProvider) GetCredentialsEnv() ([]string, error) {
-	creds, err := c.Status.sessionCreds.Get()
+	creds, err := c.Status.SessionCreds.Get()
 	if err != nil {
 		return nil, errors.Wrap(err, "getting effective credentials")
 	}
@@ -298,15 +284,15 @@ func (c *ClusterProvider) GetCredentialsEnv() ([]string, error) {
 
 // checkAuth checks the AWS authentication
 func (c *ClusterProvider) checkAuth(ctx context.Context) error {
-	output, err := c.Provider.STS().GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	output, err := c.AWSProvider.STS().GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return errors.Wrap(err, "checking AWS STS access – cannot get role ARN for current session")
 	}
 	if output == nil || output.Arn == nil {
 		return fmt.Errorf("unexpected response from AWS STS")
 	}
-	c.Status.iamRoleARN = *output.Arn
-	logger.Debug("role ARN for the current session is %q", c.Status.iamRoleARN)
+	c.Status.IAMRoleARN = *output.Arn
+	logger.Debug("role ARN for the current session is %q", c.Status.IAMRoleARN)
 	return nil
 }
 
@@ -341,31 +327,155 @@ func ResolveAMI(ctx context.Context, provider api.ClusterProvider, version strin
 }
 
 // SetAvailabilityZones sets the given (or chooses) the availability zones
-func SetAvailabilityZones(spec *api.ClusterConfig, given []string, ec2 ec2iface.EC2API, region string) error {
+// Returns whether azs were set randomly or provided by a user.
+// CheckInstanceAvailability is only run if azs were provided by the user. Random
+// selection already performs this check and makes sure AZs support all given instances.
+func SetAvailabilityZones(ctx context.Context, spec *api.ClusterConfig, given []string, ec2API awsapi.EC2, region string) (bool, error) {
 	if count := len(given); count != 0 {
 		if count < api.MinRequiredAvailabilityZones {
-			return api.ErrTooFewAvailabilityZones(given)
+			return false, api.ErrTooFewAvailabilityZones(given)
 		}
 		spec.AvailabilityZones = given
-		return nil
+		return true, nil
 	}
 
 	if count := len(spec.AvailabilityZones); count != 0 {
 		if count < api.MinRequiredAvailabilityZones {
-			return api.ErrTooFewAvailabilityZones(spec.AvailabilityZones)
+			return false, api.ErrTooFewAvailabilityZones(spec.AvailabilityZones)
 		}
-		return nil
+		return true, nil
 	}
 
 	logger.Debug("determining availability zones")
-	zones, err := az.GetAvailabilityZones(ec2, region)
+	zones, err := az.GetAvailabilityZones(ctx, ec2API, region, spec)
 	if err != nil {
-		return errors.Wrap(err, "getting availability zones")
+		return false, errors.Wrap(err, "getting availability zones")
 	}
 
 	logger.Info("setting availability zones to %v", zones)
 	spec.AvailabilityZones = zones
 
+	return false, nil
+}
+
+// CheckInstanceAvailability verifies that if any instances are provided in any node groups
+// that those instances are available in the selected AZs.
+func CheckInstanceAvailability(ctx context.Context, spec *api.ClusterConfig, ec2API awsapi.EC2) error {
+	logger.Debug("determining instance availability in zones")
+
+	// This map will use either globally configured AZs or, if set, the AZ defined by the nodegroup.
+	// map["ng-1"]["c2.large"]=[]string{"us-west-1a", "us-west-1b"}
+	instanceMap := make(map[string]map[string][]string)
+	uniqueInstances := sets.NewString()
+
+	pool := nodes.ToNodePools(spec)
+	for _, ng := range pool {
+		if _, ok := instanceMap[ng.BaseNodeGroup().Name]; !ok {
+			instanceMap[ng.BaseNodeGroup().Name] = make(map[string][]string)
+		}
+		for _, instanceType := range ng.InstanceTypeList() {
+			if instanceType == "mixed" {
+				continue
+			}
+			uniqueInstances.Insert(instanceType)
+			if len(ng.BaseNodeGroup().AvailabilityZones) > 0 {
+				instanceMap[ng.BaseNodeGroup().Name][instanceType] = ng.BaseNodeGroup().AvailabilityZones
+			} else {
+				instanceMap[ng.BaseNodeGroup().Name][instanceType] = spec.AvailabilityZones
+			}
+		}
+	}
+
+	// Do an early exit if we don't have anything.
+	if uniqueInstances.Len() == 0 {
+		// nothing to do
+		return nil
+	}
+
+	var instanceTypeOfferings []ec2types.InstanceTypeOffering
+
+	p := ec2.NewDescribeInstanceTypeOfferingsPaginator(ec2API, &ec2.DescribeInstanceTypeOfferingsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("instance-type"),
+				Values: uniqueInstances.List(),
+			},
+		},
+		LocationType: ec2types.LocationTypeAvailabilityZone,
+		MaxResults:   aws.Int32(100),
+	})
+	for p.HasMorePages() {
+		output, err := p.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("unable to list offerings for instance types %w", err)
+		}
+		instanceTypeOfferings = append(instanceTypeOfferings, output.InstanceTypeOfferings...)
+	}
+	// construct a map so instance types can easily be checked
+	// map["c2.large"]["us-east-1a"]=struct{}{}
+	offers := make(map[string]map[string]struct{})
+	for _, offer := range instanceTypeOfferings {
+		if _, ok := offers[string(offer.InstanceType)]; !ok {
+			offers[string(offer.InstanceType)] = map[string]struct{}{
+				aws.StringValue(offer.Location): {},
+			}
+		} else {
+			offers[string(offer.InstanceType)][aws.StringValue(offer.Location)] = struct{}{}
+		}
+	}
+	// check if the instance type is available in at least one of the offered zones
+	// per nodegroup.
+	for k, v := range instanceMap {
+		var (
+			notAvailableIn []string
+			available      bool
+		)
+		for instance, azs := range v {
+			if zones, ok := offers[instance]; ok {
+				for _, az := range azs {
+					if _, ok := zones[az]; ok {
+						available = true
+						break
+					} else {
+						notAvailableIn = append(notAvailableIn, az)
+					}
+				}
+			}
+			if !available {
+				return fmt.Errorf("none of the provided AZs %q support instance type %s in nodegroup %s", strings.Join(notAvailableIn, ","), instance, k)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ValidateLocalZones validates that the specified local zones exist.
+func ValidateLocalZones(ctx context.Context, ec2API awsapi.EC2, localZones []string, region string) error {
+	output, err := ec2API.DescribeAvailabilityZones(ctx, &ec2.DescribeAvailabilityZonesInput{
+		ZoneNames: localZones,
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("region-name"),
+				Values: []string{region},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{string(ec2types.AvailabilityZoneStateAvailable)},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("error describing availability zones: %w", err)
+	}
+	if len(output.AvailabilityZones) != len(localZones) {
+		return fmt.Errorf("failed to find all local zones; expected to find %d available local zones but found only %d", len(localZones), len(output.AvailabilityZones))
+	}
+	for _, z := range output.AvailabilityZones {
+		if *z.ZoneType != "local-zone" {
+			return fmt.Errorf("non local-zone %q specified in localZones", *z.ZoneName)
+		}
+	}
 	return nil
 }
 
@@ -375,8 +485,8 @@ func (c *ClusterProvider) newSession(spec *api.ProviderConfig) *session.Session 
 	// https://github.com/kubernetes/kops/blob/master/upup/pkg/fi/cloudup/awsup/aws_cloud.go#L179
 	config := aws.NewConfig().WithCredentialsChainVerboseErrors(true)
 
-	if c.Provider.Region() != "" {
-		config = config.WithRegion(c.Provider.Region()).WithSTSRegionalEndpoint(endpoints.RegionalSTSEndpoint)
+	if c.AWSProvider.Region() != "" {
+		config = config.WithRegion(c.AWSProvider.Region()).WithSTSRegionalEndpoint(endpoints.RegionalSTSEndpoint)
 	}
 
 	config = request.WithRetryer(config, newLoggingRetryer())
@@ -426,5 +536,15 @@ func (c *ClusterProvider) newSession(spec *api.ProviderConfig) *session.Session 
 
 // NewStackManager returns a new stack manager
 func (c *ClusterProvider) NewStackManager(spec *api.ClusterConfig) manager.StackManager {
-	return manager.NewStackCollection(c.Provider, spec)
+	return manager.NewStackCollection(c.AWSProvider, spec)
+}
+
+// LoadClusterIntoSpecFromStack uses stack information to load the cluster
+// configuration into the spec
+// At the moment VPC and KubernetesNetworkConfig are respected
+func (c *ClusterProvider) LoadClusterIntoSpecFromStack(ctx context.Context, spec *api.ClusterConfig, stack *manager.Stack) error {
+	if err := c.LoadClusterVPC(ctx, spec, stack); err != nil {
+		return err
+	}
+	return c.RefreshClusterStatus(ctx, spec)
 }

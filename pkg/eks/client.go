@@ -9,6 +9,7 @@ import (
 	"github.com/kris-nova/logger"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -18,6 +19,7 @@ import (
 
 	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
 	"github.com/weaveworks/eksctl/pkg/authconfigmap"
+	"github.com/weaveworks/eksctl/pkg/cfn/waiter"
 	"github.com/weaveworks/eksctl/pkg/credentials"
 	kubewrapper "github.com/weaveworks/eksctl/pkg/kubernetes"
 	"github.com/weaveworks/eksctl/pkg/utils/kubeconfig"
@@ -32,27 +34,27 @@ type Client struct {
 }
 
 // NewClient creates a new client config by embedding the STS token
-func (c *ClusterProvider) NewClient(spec *api.ClusterConfig) (*Client, error) {
-	config := kubeconfig.NewForUser(spec, c.GetUsername())
-	generator := NewGenerator(c.Provider.STSPresigner(), &credentials.RealClock{})
+func (c *KubernetesProvider) NewClient(clusterInfo kubeconfig.ClusterInfo) (*Client, error) {
+	config := kubeconfig.NewForUser(clusterInfo, GetUsername(c.RoleARN))
+	generator := NewGenerator(c.Signer, &credentials.RealClock{})
 	client := &Client{
 		Config:    config,
 		Generator: generator,
 	}
-	return client.new(spec)
+	return client.new(clusterInfo)
 }
 
 // GetUsername extracts the username part from the IAM role ARN
-func (c *ClusterProvider) GetUsername() string {
-	usernameParts := strings.Split(c.Status.iamRoleARN, "/")
+func GetUsername(roleArn string) string {
+	usernameParts := strings.Split(roleArn, "/")
 	if len(usernameParts) > 1 {
 		return usernameParts[len(usernameParts)-1]
 	}
 	return "iam-root-account"
 }
 
-func (c *Client) new(spec *api.ClusterConfig) (*Client, error) {
-	if err := c.useEmbeddedToken(spec); err != nil {
+func (c *Client) new(clusterInfo kubeconfig.ClusterInfo) (*Client, error) {
+	if err := c.useEmbeddedToken(clusterInfo); err != nil {
 		return nil, err
 	}
 
@@ -68,8 +70,8 @@ func (c *Client) new(spec *api.ClusterConfig) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) useEmbeddedToken(spec *api.ClusterConfig) error {
-	tok, err := c.Generator.GetWithSTS(context.TODO(), spec.Metadata.Name)
+func (c *Client) useEmbeddedToken(clusterInfo kubeconfig.ClusterInfo) error {
+	tok, err := c.Generator.GetWithSTS(context.TODO(), clusterInfo.ID())
 	if err != nil {
 		return errors.Wrap(err, "could not get token")
 	}
@@ -88,8 +90,8 @@ func (c *Client) NewClientSet() (*kubernetes.Clientset, error) {
 }
 
 // NewStdClientSet creates a new API client in one go with an embedded STS token, this is most commonly used option
-func (c *ClusterProvider) NewStdClientSet(spec *api.ClusterConfig) (*kubernetes.Clientset, error) {
-	_, clientSet, err := c.newClientSetWithEmbeddedToken(spec)
+func (c *KubernetesProvider) NewStdClientSet(clusterInfo kubeconfig.ClusterInfo) (*kubernetes.Clientset, error) {
+	_, clientSet, err := c.newClientSetWithEmbeddedToken(clusterInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -97,8 +99,8 @@ func (c *ClusterProvider) NewStdClientSet(spec *api.ClusterConfig) (*kubernetes.
 	return clientSet, nil
 }
 
-func (c *ClusterProvider) newClientSetWithEmbeddedToken(spec *api.ClusterConfig) (*Client, *kubernetes.Clientset, error) {
-	client, err := c.NewClient(spec)
+func (c *KubernetesProvider) newClientSetWithEmbeddedToken(clusterInfo kubeconfig.ClusterInfo) (*Client, *kubernetes.Clientset, error) {
+	client, err := c.NewClient(clusterInfo)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "creating Kubernetes client config with embedded token")
 	}
@@ -112,8 +114,8 @@ func (c *ClusterProvider) newClientSetWithEmbeddedToken(spec *api.ClusterConfig)
 }
 
 // NewRawClient creates a new raw REST client in one go with an embedded STS token
-func (c *ClusterProvider) NewRawClient(spec *api.ClusterConfig) (*kubewrapper.RawClient, error) {
-	client, clientSet, err := c.newClientSetWithEmbeddedToken(spec)
+func (c *KubernetesProvider) NewRawClient(clusterInfo kubeconfig.ClusterInfo) (*kubewrapper.RawClient, error) {
+	client, clientSet, err := c.newClientSetWithEmbeddedToken(clusterInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -122,12 +124,44 @@ func (c *ClusterProvider) NewRawClient(spec *api.ClusterConfig) (*kubewrapper.Ra
 }
 
 // ServerVersion will use discovery API to fetch version of Kubernetes control plane
-func (c *ClusterProvider) ServerVersion(rawClient *kubewrapper.RawClient) (string, error) {
+func (c *KubernetesProvider) ServerVersion(rawClient *kubewrapper.RawClient) (string, error) {
 	return rawClient.ServerVersion()
 }
 
+// WaitForControlPlane waits till the control plane is ready
+func (c *KubernetesProvider) WaitForControlPlane(meta *api.ClusterMeta, clientSet *kubewrapper.RawClient, waitTimeout time.Duration) error {
+	successCount := 0
+	operation := func() (bool, error) {
+		_, err := c.ServerVersion(clientSet)
+		if err == nil {
+			if successCount >= 5 {
+				return true, nil
+			}
+			successCount++
+			return false, nil
+		}
+		logger.Debug("control plane not ready yet – %s", err.Error())
+		return false, nil
+	}
+
+	w := waiter.Waiter{
+		Operation: operation,
+		NextDelay: func(_ int) time.Duration {
+			return 20 * time.Second
+		},
+	}
+
+	if err := w.WaitWithTimeout(waitTimeout); err != nil {
+		if err == context.DeadlineExceeded {
+			return errors.Errorf("timed out waiting for control plane %q after %s", meta.Name, waitTimeout)
+		}
+		return err
+	}
+	return nil
+}
+
 // UpdateAuthConfigMap creates or adds a nodegroup IAM role in the auth ConfigMap for the given nodegroup.
-func (c *ClusterProvider) UpdateAuthConfigMap(nodeGroups []*api.NodeGroup, clientSet kubernetes.Interface) error {
+func UpdateAuthConfigMap(ctx context.Context, nodeGroups []*api.NodeGroup, clientSet kubernetes.Interface) error {
 	for _, ng := range nodeGroups {
 		// authorise nodes to join
 		if err := authconfigmap.AddNodeGroup(clientSet, ng); err != nil {
@@ -135,7 +169,7 @@ func (c *ClusterProvider) UpdateAuthConfigMap(nodeGroups []*api.NodeGroup, clien
 		}
 
 		// wait for nodes to join
-		if err := c.WaitForNodes(clientSet, ng); err != nil {
+		if err := WaitForNodes(ctx, clientSet, ng); err != nil {
 			return err
 		}
 	}
@@ -143,18 +177,18 @@ func (c *ClusterProvider) UpdateAuthConfigMap(nodeGroups []*api.NodeGroup, clien
 }
 
 // WaitForNodes waits till the nodes are ready
-func (c *ClusterProvider) WaitForNodes(clientSet kubernetes.Interface, ng KubeNodeGroup) error {
+func WaitForNodes(ctx context.Context, clientSet kubernetes.Interface, ng KubeNodeGroup) error {
 	minSize := ng.Size()
 	if minSize == 0 {
 		return nil
 	}
-	timer := time.After(c.Provider.WaitTimeout())
-	timeout := false
+
 	readyNodes := sets.NewString()
 	watcher, err := clientSet.CoreV1().Nodes().Watch(context.TODO(), ng.ListOptions())
 	if err != nil {
 		return errors.Wrap(err, "creating node watcher")
 	}
+	defer watcher.Stop()
 
 	counter, err := getNodes(clientSet, ng)
 	if err != nil {
@@ -162,10 +196,23 @@ func (c *ClusterProvider) WaitForNodes(clientSet kubernetes.Interface, ng KubeNo
 	}
 
 	logger.Info("waiting for at least %d node(s) to become ready in %q", minSize, ng.NameString())
-	for !timeout && counter < minSize {
+	for {
 		select {
-		case event := <-watcher.ResultChan():
+		case event, ok := <-watcher.ResultChan():
 			logger.Debug("event = %#v", event)
+			if !ok {
+				logger.Debug("the watcher channel was closed... stop processing events from it")
+				return fmt.Errorf("the watcher channel for the nodes was closed by Kubernetes due to an unknown error")
+			}
+			if event.Type == watch.Error {
+				logger.Debug("received an error event type from watcher: %+v", event.Object)
+				msg := "unexpected error event type from node watcher"
+				if statusErr, ok := event.Object.(*metav1.Status); ok {
+					return fmt.Errorf("%s: %s", msg, statusErr.String())
+				}
+				return fmt.Errorf("%s: %+v", msg, event.Object)
+			}
+
 			if event.Object != nil && event.Type != watch.Deleted {
 				if node, ok := event.Object.(*corev1.Node); ok {
 					if isNodeReady(node) {
@@ -178,13 +225,13 @@ func (c *ClusterProvider) WaitForNodes(clientSet kubernetes.Interface, ng KubeNo
 					}
 				}
 			}
-		case <-timer:
-			timeout = true
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for at least %d nodes to join the cluster and become ready in %q: %w", minSize, ng.NameString(), ctx.Err())
 		}
-	}
-	watcher.Stop()
-	if timeout {
-		return fmt.Errorf("timed out (after %s) waiting for at least %d nodes to join the cluster and become ready in %q", c.Provider.WaitTimeout(), minSize, ng.NameString())
+
+		if counter >= minSize {
+			break
+		}
 	}
 
 	if _, err = getNodes(clientSet, ng); err != nil {

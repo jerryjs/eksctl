@@ -1,9 +1,9 @@
 package v1alpha5
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	. "github.com/onsi/ginkgo/v2"
+
 	. "github.com/onsi/gomega"
 )
 
@@ -14,7 +14,7 @@ type nodeGroupCase struct {
 
 var _ = Describe("Managed Nodegroup Validation", func() {
 	DescribeTable("Supported and unsupported field combinations", func(n *nodeGroupCase) {
-		SetManagedNodeGroupDefaults(n.ng, &ClusterMeta{Name: "managed-cluster"})
+		SetManagedNodeGroupDefaults(n.ng, &ClusterMeta{Name: "managed-cluster"}, false)
 		err := ValidateManagedNodeGroup(0, n.ng)
 		if n.errMsg == "" {
 			Expect(err).NotTo(HaveOccurred())
@@ -133,7 +133,7 @@ var _ = Describe("Managed Nodegroup Validation", func() {
 				ID: "lt-custom",
 			},
 		}
-		SetManagedNodeGroupDefaults(mng, &ClusterMeta{Name: "managed-cluster"})
+		SetManagedNodeGroupDefaults(mng, &ClusterMeta{Name: "managed-cluster"}, false)
 		err := ValidateManagedNodeGroup(0, mng)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("cannot set instanceType, ami, ssh.allow, ssh.enableSSM, ssh.sourceSecurityGroupIds, securityGroups, " +
@@ -186,7 +186,7 @@ var _ = Describe("Managed Nodegroup Validation", func() {
 				MaxUnavailablePercentage: e.unavailablePercentage,
 			},
 		}
-		SetManagedNodeGroupDefaults(mng, &ClusterMeta{Name: "managed-cluster"})
+		SetManagedNodeGroupDefaults(mng, &ClusterMeta{Name: "managed-cluster"}, false)
 		err := ValidateManagedNodeGroup(0, mng)
 		if e.valid {
 			Expect(err).NotTo(HaveOccurred())

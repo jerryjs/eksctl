@@ -4,11 +4,12 @@ import (
 	"encoding/base64"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	. "github.com/onsi/ginkgo/extensions/table"
-	. "github.com/onsi/gomega"
-	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
+	"github.com/aws/aws-sdk-go-v2/aws"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
 	"github.com/weaveworks/eksctl/pkg/nodebootstrap"
 )
 
@@ -19,7 +20,7 @@ type managedEntry struct {
 }
 
 var _ = DescribeTable("Managed AL2", func(e managedEntry) {
-	api.SetManagedNodeGroupDefaults(e.ng, &api.ClusterMeta{Name: "cluster"})
+	api.SetManagedNodeGroupDefaults(e.ng, &api.ClusterMeta{Name: "cluster"}, false)
 	bootstrapper := nodebootstrap.NewManagedAL2Bootstrapper(e.ng)
 	bootstrapper.UserDataMimeBoundary = "//"
 

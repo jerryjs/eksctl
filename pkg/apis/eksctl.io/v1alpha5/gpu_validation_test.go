@@ -3,12 +3,10 @@ package v1alpha5_test
 import (
 	"fmt"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
-	instanceutils "github.com/weaveworks/eksctl/pkg/utils/instance"
 )
 
 var _ = Describe("GPU instance support", func() {
@@ -16,7 +14,6 @@ var _ = Describe("GPU instance support", func() {
 	type gpuInstanceEntry struct {
 		gpuInstanceType string
 		amiFamily       string
-		customErr       string
 
 		expectUnsupportedErr bool
 	}
@@ -24,13 +21,7 @@ var _ = Describe("GPU instance support", func() {
 	assertValidationError := func(e gpuInstanceEntry, err error) {
 		if e.expectUnsupportedErr {
 			Expect(err).To(HaveOccurred())
-			if e.customErr != "" {
-				Expect(err).To(MatchError(e.customErr))
-			} else if instanceutils.IsNvidiaInstanceType(e.gpuInstanceType) {
-				Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf("GPU instance types are not supported for %s", e.amiFamily))))
-			} else {
-				Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf("Inferentia instance types are not supported for %s", e.amiFamily))))
-			}
+			Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf("Inferentia instance types are not supported for %s", e.amiFamily))))
 			return
 		}
 		Expect(err).NotTo(HaveOccurred())
@@ -51,16 +42,9 @@ var _ = Describe("GPU instance support", func() {
 			gpuInstanceType: "g5.12xlarge",
 			amiFamily:       api.NodeImageFamilyAmazonLinux2,
 		}),
-		Entry("Bottlerocket", gpuInstanceEntry{
-			amiFamily:            api.NodeImageFamilyBottlerocket,
-			gpuInstanceType:      "g4dn.xlarge",
-			expectUnsupportedErr: true,
-			customErr:            fmt.Sprintf("NVIDIA GPU instance types are not supported for managed nodegroups with AMIFamily %s", api.NodeImageFamilyBottlerocket),
-		}),
 		Entry("Ubuntu2004", gpuInstanceEntry{
-			amiFamily:            api.NodeImageFamilyUbuntu2004,
-			gpuInstanceType:      "g4dn.xlarge",
-			expectUnsupportedErr: true,
+			amiFamily:       api.NodeImageFamilyUbuntu2004,
+			gpuInstanceType: "g4dn.xlarge",
 		}),
 		Entry("Bottlerocket", gpuInstanceEntry{
 			amiFamily:            api.NodeImageFamilyBottlerocket,
@@ -73,7 +57,7 @@ var _ = Describe("GPU instance support", func() {
 		ng := api.NewNodeGroup()
 		ng.InstanceType = e.gpuInstanceType
 		ng.AMIFamily = e.amiFamily
-		assertValidationError(e, api.ValidateNodeGroup(0, ng))
+		assertValidationError(e, api.ValidateNodeGroup(0, ng, api.NewClusterConfig()))
 
 	},
 		Entry("AL2", gpuInstanceEntry{
@@ -95,35 +79,37 @@ var _ = Describe("GPU instance support", func() {
 			amiFamily:       api.NodeImageFamilyBottlerocket,
 			gpuInstanceType: "g4dn.xlarge",
 		}),
-		Entry("Bottlerocket", gpuInstanceEntry{
+		Entry("Bottlerocket infra", gpuInstanceEntry{
 			amiFamily:            api.NodeImageFamilyBottlerocket,
 			gpuInstanceType:      "inf1.xlarge",
 			expectUnsupportedErr: true,
 		}),
-		Entry("Ubuntu2004", gpuInstanceEntry{
-			amiFamily:            api.NodeImageFamilyUbuntu2004,
-			gpuInstanceType:      "g4dn.xlarge",
-			expectUnsupportedErr: true,
+		Entry("Bottlerocket nvidia", gpuInstanceEntry{
+			amiFamily:       api.NodeImageFamilyBottlerocket,
+			gpuInstanceType: "g4dn.xlarge",
 		}),
-		Entry("Windows2004", gpuInstanceEntry{
-			amiFamily:            api.NodeImageFamilyWindowsServer2004CoreContainer,
-			gpuInstanceType:      "p2.xlarge",
-			expectUnsupportedErr: true,
+		Entry("Ubuntu2004", gpuInstanceEntry{
+			amiFamily:       api.NodeImageFamilyUbuntu2004,
+			gpuInstanceType: "g4dn.xlarge",
 		}),
 		Entry("Windows2019Core", gpuInstanceEntry{
-			amiFamily:            api.NodeImageFamilyWindowsServer2019CoreContainer,
-			gpuInstanceType:      "g3.8xlarge",
-			expectUnsupportedErr: true,
+			amiFamily:       api.NodeImageFamilyWindowsServer2019CoreContainer,
+			gpuInstanceType: "g3.8xlarge",
 		}),
 		Entry("Windows2019Full", gpuInstanceEntry{
-			amiFamily:            api.NodeImageFamilyWindowsServer2019FullContainer,
-			gpuInstanceType:      "p3.2xlarge",
-			expectUnsupportedErr: true,
-		}),
-		Entry("Windows20H2Core", gpuInstanceEntry{
-			amiFamily:            api.NodeImageFamilyWindowsServer20H2CoreContainer,
-			gpuInstanceType:      "g4dn.xlarge",
-			expectUnsupportedErr: true,
+			amiFamily:       api.NodeImageFamilyWindowsServer2019FullContainer,
+			gpuInstanceType: "p3.2xlarge",
 		}),
 	)
+	Describe("ARM GPU", func() {
+		When("ARM GPU instance is request for unmanaged nodegroups", func() {
+			It("errors", func() {
+				ng := api.NewNodeGroup()
+				ng.InstanceType = "g5g.xlarge"
+				ng.AMIFamily = api.NodeImageFamilyBottlerocket
+				err := api.ValidateNodeGroup(0, ng, api.NewClusterConfig())
+				Expect(err).To(MatchError(ContainSubstring("ARM GPU instance types are not supported for unmanaged nodegroups with AMIFamily Bottlerocket")))
+			})
+		})
+	})
 })

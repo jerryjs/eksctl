@@ -1,21 +1,27 @@
 package manager
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	cfn "github.com/aws/aws-sdk-go/service/cloudformation"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/stretchr/testify/mock"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	api "github.com/weaveworks/eksctl/pkg/apis/eksctl.io/v1alpha5"
+	"github.com/weaveworks/eksctl/pkg/testutils/mockprovider"
 )
 
 var _ = Describe("StackCollection NodeGroup", func() {
 	Describe("GetNodeGroupType", func() {
-		createTags := func(tags map[string]string) []*cfn.Tag {
-			cfnTags := make([]*cfn.Tag, 0)
+		createTags := func(tags map[string]string) []types.Tag {
+			cfnTags := make([]types.Tag, 0)
 			for k, v := range tags {
-				cfnTags = append(cfnTags, &cfn.Tag{
+				cfnTags = append(cfnTags, types.Tag{
 					Key:   aws.String(k),
 					Value: aws.String(v),
 				})
@@ -105,5 +111,56 @@ var _ = Describe("StackCollection NodeGroup", func() {
 				},
 				api.NodeGroupType("")),
 		)
+	})
+
+	Describe("GetUnmanagedNodeGroupAutoScalingGroupName", func() {
+
+		stackName := "stack"
+		logicalResourceID := "NodeGroup"
+		physicalResourceID := "asg"
+
+		It("returns the asg name", func() {
+			p := mockprovider.NewMockProvider()
+			p.MockCloudFormation().On("DescribeStackResource", mock.Anything, &cloudformation.DescribeStackResourceInput{
+				LogicalResourceId: aws.String(logicalResourceID),
+				StackName:         aws.String(stackName),
+			}).Return(&cloudformation.DescribeStackResourceOutput{
+				StackResourceDetail: &types.StackResourceDetail{
+					LogicalResourceId:  aws.String(logicalResourceID),
+					StackName:          aws.String(stackName),
+					PhysicalResourceId: aws.String(physicalResourceID),
+				},
+			}, nil)
+
+			sm := NewStackCollection(p, api.NewClusterConfig())
+			name, err := sm.GetUnmanagedNodeGroupAutoScalingGroupName(context.Background(), &types.Stack{
+				StackName: aws.String(stackName),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(name).To(Equal(physicalResourceID))
+		})
+
+		When("The asg resource has no physical ID", func() {
+			It("returns an error", func() {
+				p := mockprovider.NewMockProvider()
+				p.MockCloudFormation().On("DescribeStackResource", mock.Anything, &cloudformation.DescribeStackResourceInput{
+					LogicalResourceId: aws.String(logicalResourceID),
+					StackName:         aws.String(stackName),
+				}).Return(&cloudformation.DescribeStackResourceOutput{
+					StackResourceDetail: &types.StackResourceDetail{
+						LogicalResourceId:  aws.String(logicalResourceID),
+						StackName:          aws.String(stackName),
+						PhysicalResourceId: nil,
+					},
+				}, fmt.Errorf("no PhysicalResourceId"))
+
+				sm := NewStackCollection(p, api.NewClusterConfig())
+				name, err := sm.GetUnmanagedNodeGroupAutoScalingGroupName(context.Background(), &types.Stack{
+					StackName: aws.String(stackName),
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(name).To(BeEmpty())
+			})
+		})
 	})
 })

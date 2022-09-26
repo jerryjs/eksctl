@@ -193,13 +193,13 @@ Note that `maxUnavailable` cannot be higher than `maxSize`. Also, `maxUnavailabl
 This feature is only available for managed nodes.
 
 ## Updating managed nodegroups
-It is also possible to update specific fields of a managed nodegroup with the command `eksctl update nodegroup` without using `upgrade`.
 
-This new command currently only supports a few fields. It is intended to be used as a way to modify the configuration of a nodegroup without triggering an entire upgrade.
+`eksctl` allows updating the [UpdateConfig](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-eks-nodegroup-updateconfig.html) section of a managed nodegroup.
+This section defines two fields. `MaxUnavailable` and `MaxUnavailablePercentage`. Your nodegroups are unaffected during
+the update, thus downtime shouldn't be expected.
 
-Right now, it will only update upgrade configuration.
-
-The command `update nodegroup` should be used with a config file using the `--config-file` flag. If the config file contains fields that cannot be updated through `eksctl update nodegroup`, a log will inform you of all the fields that remained unchanged.
+The command `update nodegroup` should be used with a config file using the `--config-file` flag. The nodegroup should
+contain an `nodeGroup.updateConfig` section. More information can be found [here](https://eksctl.io/usage/schema/#nodeGroups-updateConfig).
 
 ## Nodegroup Health issues
 EKS Managed Nodegroups automatically checks the configuration of your nodegroup and nodes for health issues and reports
@@ -246,8 +246,6 @@ eksctl scale nodegroup --name=managed-ng-1 --cluster=managed-cluster --nodes=4 -
 EKS Managed Nodegroups are managed by AWS EKS and do not offer the same level of configuration as unmanaged nodegroups.
 The unsupported options are noted below.
 
-- Tags (managedNodeGroups[*].tags) in managed nodegroups apply to the EKS Nodegroup resource and to the EC2 instances launched as part of the nodegroup.
-They do not propagate to the provisioned Autoscaling Group like in unmanaged nodegroups.
 - `iam.instanceProfileARN` is not supported for managed nodegroups.
 - The `amiFamily` field supports only `AmazonLinux2`
 - `instancesDistribution` field is not supported

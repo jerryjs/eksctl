@@ -2,8 +2,8 @@
 
 sponsored by [![Weaveworks](img/empty.svg#wwinline)](https://www.weave.works/) and built by [![Contributors](img/gophers.png#inline)](https://github.com/weaveworks/eksctl/graphs/contributors) on [![Github](img/empty.svg#gitinline)](https://github.com/weaveworks/eksctl)
 
-!!! tip "New for 2021"
-    Use `eksctl` to manage clusters which were created by other tools. Find out more [here](/usage/unowned-clusters).
+!!! tip "New for 2022"
+    `eksctl` now supports creating clusters and nodegroups on [AWS Outposts](/usage/outposts).
 
 `eksctl` is a simple CLI tool for creating and managing clusters on EKS - Amazon's managed Kubernetes service for EC2.
 It is written in Go, uses CloudFormation, was created by [Weaveworks](https://www.weave.works/) and it welcomes
@@ -95,10 +95,3 @@ To learn more about how to create clusters and other features continue reading t
 
 [ekskubectl]: https://docs.aws.amazon.com/eks/latest/userguide/configure-kubectl.html
 
-[![Coverage Status](https://coveralls.io/repos/github/weaveworks/eksctl/badge.svg?branch=master)](https://coveralls.io/github/weaveworks/eksctl?branch=master) [![Go Report Card](https://goreportcard.com/badge/github.com/weaveworks/eksctl)](https://goreportcard.com/report/github.com/weaveworks/eksctl)
-![Gophers: E, K, S, C, T, & L](img/eksctl.png)
-
-!!! credits
-    _Original Gophers drawn by [Ashley McNamara](https://twitter.com/ashleymcnamara), unique E, K, S, C, T & L Gopher identities had been produced with [Gopherize.me](https://github.com/matryer/gopherize.me)._
-
-    Site powered by [Netlify ©](https://netlify.com)
