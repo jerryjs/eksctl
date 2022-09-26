@@ -1,7 +1,7 @@
 package outputs
 
 import (
-	cfn "github.com/aws/aws-sdk-go/service/cloudformation"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 )
 
 // ServiceAccount/Role
@@ -18,7 +18,7 @@ func init() {
 	IRSAOutput = make(chan IRSA)
 }
 
-func Get(stack cfn.Stack, key string) *string {
+func Get(stack types.Stack, key string) *string {
 	for _, x := range stack.Outputs {
 		if *x.OutputKey == key {
 			return x.OutputValue
